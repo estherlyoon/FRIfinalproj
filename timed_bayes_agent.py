@@ -1,67 +1,122 @@
 import agent
 import world
+import math
+import time
+
+class SavedArrangement:
+    
+    def __init__(self, arrangement, hunt):
+        self.arrangement = arrangement
+        self.hunt = hunt
 
 
-class BayesianAgent(agent.Agent):
-    """The exhaustive Bayesian agent evaluates all possible solutions at every
-    step of the hunt using Bayesian search theory. It always visits the first
+class SavedPaths:
+
+    def __init__(self, path, agent):
+        self.path = path
+        self.cost = 0
+        hunt = []
+        for h in range(len(agent.hunt)):
+            if not agent.found[h]:
+                hunt.append(agent.hunt[h])
+        saved_arrs = []
+        for arr in range(0, len(agent.arrangement_space.arrangements)):
+            if agent.arrangement_space.valid_arrangements[arr]:
+                saved_arrs.append(SavedArrangement(agent.arrangement_space.arrangements[arr], hunt))
+        self.saved_arrangements = saved_arrs
+
+
+class TimedBayesianAgent(agent.Agent):
+    """The Timed Bayesian agent evaluates solutions in a breadth-first search
+    given a time delimiter using Bayesian search theory. It visits the first
     node in the path with the lowest expected cost given the current arrangement
-    space.
+    space and saved path costs.
     """
-    def expected_path_cost(self, path):
-        cost = 0
-        # For each valid arrangement
-        for i in range(0, len(self.arrangement_space.arrangements)):
-            if self.arrangement_space.valid_arrangements[i]:
-                arrangement = self.arrangement_space.arrangements[i]
-                travel_distance = 0
-                # Determine which objects are yet to be found
-                hunt = []
-                for j in range(len(self.hunt)):
-                    if not self.found[j]:
-                        hunt.append(self.hunt[j])
-                # Step along path until hunt completion
-		# We want to step through the path for x amount of time, same for each path
-                for j in range(1, len(path)):	                    
-		    # If hunt complete, stop early
-                    if len(hunt) == 0:
-                        break
-                    # Move along path
-                    n_to, n_from = path[j], path[j-1]
-                    travel_distance += \
-                        self.world.graph.shortest_path(n_to, n_from).cost
-                    # Collect objects
-		    # Q: I thought this was virtually stepping through, doesn't know if object are there?
-                    new_hunt = hunt.copy()
-                    for obj in hunt:
-                        if arrangement.contains(obj, n_to):
-                            new_hunt.remove(obj)
-                    hunt = new_hunt
-                # Factor in expected contribution
-                print ("adding cost of ", arrangement, ": ", travel_distance * arrangement.prob())
-                cost += travel_distance * arrangement.prob()
+    # track these as you go, can choose one after time is up
+    global best_path
+    global best_path_cost
+    global paths
+    global saved_paths
 
-        print("\ntotal cost of path ", path, " = ", cost, "\n");
-        return cost
+    def init_saved_paths(self):
+        global paths
+        global saved_paths
+        saved_paths = []
+        for path in paths:
+            saved_paths.append(SavedPaths(path, self))
+
+
+    def expected_path_cost(self, step):
+        global best_path 
+        global best_path_cost
+        global saved_paths
+        global paths
+        best_path = None
+        best_path_cost = math.inf
+        for p in range(0, len(paths)):
+            step_cost = 0
+            # check if first path up to steps is the same, if so copy val and done TODO
+            # for each valid arrangement
+            valid_index = 0
+            for i in range(0, len(self.arrangement_space.arrangements)):
+                if not self.arrangement_space.valid_arrangements[i]:
+                    continue
+                # restore old hunt from last step
+                arrangement = saved_paths[p].saved_arrangements[valid_index].arrangement
+                last_hunt = saved_paths[p].saved_arrangements[valid_index].hunt
+
+                # If hunt complete, don't calculate cost
+                if len(last_hunt) == 0:
+                    valid_index += 1
+                    continue
+                # Move along path
+                n_to, n_from = paths[p][step], paths[p][step-1]
+                travel_distance = 0
+                travel_distance += \
+                    self.world.graph.shortest_path(n_to, n_from).cost
+                # Collect objects
+                new_hunt = last_hunt.copy()
+                for obj in last_hunt:
+                    if arrangement.contains(obj, n_to):
+                        new_hunt.remove(obj)
+
+                saved_paths[p].saved_arrangements[valid_index].hunt = new_hunt 
+                # Factor in expected contribution
+                saved_paths[p].cost += travel_distance * arrangement.prob()
+                print(">>> travel distance = ", travel_distance)
+                print("cost of arrangement ", arrangement, " is ", travel_distance * arrangement.prob())
+                valid_index += 1 
+
+            # update cost if better
+            if saved_paths[p].cost < best_path_cost:
+                best_path_cost = saved_paths[p].cost
+                best_path = saved_paths[p].path
+
+
+            print("\n\t~~~~~cost of whole step of path ", saved_paths[p].path, " for step ",step," is ", saved_paths[p].cost)
+
 
     def run(self):
+        global paths
         # Collect objects at current location and update the occurrence space
         super().run()
 
         if self.done():
             return
 
-        # Determine the lowest cost path, whose nodes may not be adjacent
         paths = self.world.graph.permute_paths(self.loc)
-        best_path = None
-        best_path_cost = 0
-        for path in paths: # run these concurrently?
-            path_cost = self.expected_path_cost(path)
-            if best_path is None or path_cost < best_path_cost:
-                best_path = path
-                best_path_cost = path_cost
+        self.init_saved_paths()
+
+        # Determine cost of path in breadth-first search for 5 seconds
+        end_time = time.time() + 5  
+        for i in range(1, len(paths[0])): 
+            if (time.time() < end_time):
+                self.expected_path_cost(i)
+            else:
+                break
         assert best_path is not None
 
+        print("\nbest path for this step is ", best_path, "\n*******************************\n")
         # Convert to a traversable path of adjacent nodes
         path = self.world.graph.stitch_path(best_path)
 
